@@ -11,6 +11,35 @@ export interface Transformation {
   to: TransformablePieceType
 }
 
+export interface MoveEffects {
+  /** HP damage dealt to the mover by bombs during this move. */
+  bombDamage?: number
+  /** The moved piece changed ownership through a hijack. */
+  hijacked?: boolean
+}
+
+export type BombKind = 'friendly' | 'triple'
+
+/** Public bomb marker; triple bombs expire, friendly bombs do not. */
+export interface BombMarker {
+  square: Square
+  side: 'white' | 'black'
+  kind: BombKind
+  movesLeft: number | null
+}
+
+/** Public shield marker. */
+export interface ShieldMarker {
+  square: Square
+  side: 'white' | 'black'
+}
+
+export interface BoardEffects {
+  bombs: BombMarker[]
+  shields: ShieldMarker[]
+  hijack: { byUid: string } | null
+}
+
 export interface MoveRecord {
   ply: number
   color: Color
@@ -20,6 +49,8 @@ export interface MoveRecord {
   captured: PieceType | null
   promotion: PromotionPiece | null
   transformation: Transformation | null
+  /** Server-resolved event effects triggered by this move. */
+  effects?: MoveEffects
   fen: string
 }
 

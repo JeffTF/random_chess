@@ -64,6 +64,25 @@ function pass(label) {
   console.log(`PASS  ${label}`)
 }
 
+// A move may trigger a random event offer (Phase 4). Decline it through
+// the offered player so version assertions below stay deterministic.
+async function settleOffers(matchId, alice, bob) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const match = (await getDoc(doc(alice.db, 'matches', matchId))).data()
+    const offer = match.event
+    if (match.status !== 'event_pending' || !offer) {
+      return match
+    }
+    const target = offer.offeredTo === 'white' ? alice : bob
+    await call(target, 'respondToEvent', {
+      matchId,
+      eventId: offer.id,
+      accept: false,
+    })
+  }
+  return (await getDoc(doc(alice.db, 'matches', matchId))).data()
+}
+
 const clients = []
 try {
   const alice = makeClient('alice')
@@ -140,13 +159,13 @@ try {
     to: 'e4',
     expectedVersion: 0,
   })
-  assert.equal(first.version, 1)
-  assert.equal(first.status, 'active')
+  assert.ok(first.version >= 1)
+  assert.ok(['active', 'event_pending'].includes(first.status))
   pass('white move applied on the server')
 
-  const afterFirst = (await getDoc(doc(bob.db, 'matches', matchId))).data()
+  const afterFirst = await settleOffers(matchId, alice, bob)
   assert.equal(afterFirst.currentTurn, 'black')
-  assert.equal(afterFirst.version, 1)
+  assert.ok(afterFirst.version >= 1)
   assert.equal(afterFirst.plyCount, 1)
   assert.equal(afterFirst.history.length, 1)
   const [record] = afterFirst.history
@@ -155,6 +174,7 @@ try {
   assert.notEqual(record.transformation.to, 'p')
   assert.ok(['n', 'b', 'r', 'q'].includes(record.transformation.to))
   assert.deepEqual(afterFirst.lastMove, { from: 'e2', to: 'e4' })
+  const firstVersion = afterFirst.version
   pass('opponent sees the same transformed board state')
 
   const replay = await call(alice, 'submitMove', {
@@ -165,11 +185,9 @@ try {
     expectedVersion: 0,
   })
   assert.equal(replay.duplicate, true)
-  assert.equal(replay.version, 1)
-  const afterReplay = (
-    await getDoc(doc(alice.db, 'matches', matchId))
-  ).data()
-  assert.equal(afterReplay.version, 1)
+  assert.equal(replay.version, firstVersion)
+  const afterReplay = await settleOffers(matchId, alice, bob)
+  assert.equal(afterReplay.version, firstVersion)
   assert.equal(afterReplay.history.length, 1)
   pass('duplicate requestId does not apply the move twice')
 
@@ -194,7 +212,7 @@ try {
         requestId: 'eve-intruder-0001',
         from: 'e7',
         to: 'e5',
-        expectedVersion: 1,
+        expectedVersion: firstVersion,
       }),
     'functions/permission-denied',
     'not-a-member',
@@ -206,12 +224,10 @@ try {
     requestId: 'bob-e7e5-0001',
     from: 'e7',
     to: 'e5',
-    expectedVersion: 1,
+    expectedVersion: firstVersion,
   })
-  assert.equal(second.version, 2)
-  const afterSecond = (
-    await getDoc(doc(alice.db, 'matches', matchId))
-  ).data()
+  assert.ok(second.version > firstVersion)
+  const afterSecond = await settleOffers(matchId, alice, bob)
   assert.equal(afterSecond.currentTurn, 'white')
   assert.equal(afterSecond.history.length, 2)
   assert.equal(afterSecond.history[1].san, 'e5')
@@ -222,7 +238,7 @@ try {
   )
   assert.equal(moveDoc.exists(), true)
   assert.equal(moveDoc.data().playerUid, bobUid)
-  assert.equal(moveDoc.data().version, 2)
+  assert.equal(moveDoc.data().version, second.version)
   pass('move document records the request, player, and version')
 
   console.log('\nPHASE 2 EMULATOR CHECK PASSED')

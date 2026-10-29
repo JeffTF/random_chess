@@ -2,7 +2,7 @@ import type { Color } from 'chess.js'
 import type { GameStatus } from '../game/types'
 import { colorName, drawReasonLabel } from './pieceDisplay'
 
-export type StatusTone = 'active' | 'check' | 'finished' | 'draw'
+export type StatusTone = 'active' | 'check' | 'finished' | 'draw' | 'event'
 
 export interface StatusCopy {
   headline: string

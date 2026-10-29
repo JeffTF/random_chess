@@ -3,6 +3,7 @@ dist
 coverage
 functions/lib
 .firebase
+*-debug.log
 *.local
 .env
 .env.*

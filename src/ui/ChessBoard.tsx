@@ -1,5 +1,5 @@
 import type { Color, Square } from 'chess.js'
-import type { Board, LegalMove } from '../game/types'
+import type { Board, BoardEffects, LegalMove } from '../game/types'
 import { PIECE_GLYPHS, colorName, pieceName } from './pieceDisplay'
 
 interface ChessBoardProps {
@@ -10,6 +10,7 @@ interface ChessBoardProps {
   lastMove: { from: Square; to: Square } | null
   inCheck: boolean
   interactive: boolean
+  effects?: BoardEffects | null
   onSquareClick: (square: Square) => void
 }
 
@@ -23,6 +24,7 @@ export function ChessBoard({
   lastMove,
   inCheck,
   interactive,
+  effects = null,
   onSquareClick,
 }: ChessBoardProps) {
   const targets = new Map(legalMoves.map((move) => [move.to, move]))
@@ -39,6 +41,12 @@ export function ChessBoard({
               lastMove?.from === square || lastMove?.to === square
             const isCheckedKing =
               inCheck && cell?.type === 'k' && cell.color === turn
+            const bomb = effects?.bombs.find(
+              (marker) => marker.square === square,
+            )
+            const shield = effects?.shields.find(
+              (marker) => marker.square === square,
+            )
 
             const classes = [
               'square',
@@ -61,6 +69,12 @@ export function ChessBoard({
               ? `, legal move${target.capture ? ', capture' : ''}`
               : ''
             const selectedDescription = isSelected ? ', selected' : ''
+            const bombDescription = bomb
+              ? bomb.kind === 'triple'
+                ? `, triple bomb, ${bomb.movesLeft ?? 0} moves left`
+                : ', friendly bomb'
+              : ''
+            const shieldDescription = shield ? ', shielded' : ''
 
             return (
               <button
@@ -69,7 +83,7 @@ export function ChessBoard({
                 className={classes}
                 onClick={() => onSquareClick(square)}
                 disabled={!interactive}
-                aria-label={`${square}, ${pieceDescription}${selectedDescription}${targetDescription}`}
+                aria-label={`${square}, ${pieceDescription}${selectedDescription}${targetDescription}${bombDescription}${shieldDescription}`}
               >
                 {columnIndex === 0 && (
                   <span className="coordinate rank-coordinate">
@@ -88,6 +102,21 @@ export function ChessBoard({
                   >
                     {PIECE_GLYPHS[cell.type]}
                   </span>
+                )}
+                {bomb && (
+                  <span
+                    className={`marker marker-bomb marker-bomb-${bomb.kind}`}
+                    aria-hidden="true"
+                  >
+                    {bomb.kind === 'triple' ? (
+                      <span className="marker-count">
+                        {bomb.movesLeft ?? 0}
+                      </span>
+                    ) : null}
+                  </span>
+                )}
+                {shield && (
+                  <span className="marker marker-shield" aria-hidden="true" />
                 )}
               </button>
             )

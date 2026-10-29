@@ -133,7 +133,7 @@ export function OnlineApp({
             <span className="eyebrow-mark" aria-hidden="true" />
             {match
               ? `Online match · Room ${match.roomCode}`
-              : 'Phase 2 · Online rooms'}
+              : 'Online rooms'}
           </p>
           <h1>Chaos Chess</h1>
           <p className="tagline">

@@ -1,6 +1,14 @@
 import type { Color, Square } from 'chess.js'
 import type { Timestamp } from 'firebase/firestore'
-import type { MoveRecord } from '../game/types'
+import type { EventKind } from '../game/events'
+import type { BoardEffects, MoveRecord } from '../game/types'
+
+export type {
+  BoardEffects,
+  BombKind,
+  BombMarker,
+  ShieldMarker,
+} from '../game/types'
 
 export type MatchSide = 'white' | 'black'
 
@@ -15,7 +23,25 @@ export type EndReason =
   | 'hp-depleted'
   | 'resignation'
 
-/** Public match state; private HP will live in a separate document. */
+export interface EventOffer {
+  id: string
+  kind: EventKind
+  offeredTo: MatchSide
+  cost: number
+  requiresPiece: boolean
+  createdAtMs: number
+  expiresAtMs: number
+}
+
+export interface EventSummary {
+  id: string
+  kind: EventKind
+  byUid: string | null
+  outcome: 'accepted' | 'declined' | 'expired'
+  endedMatch: boolean
+}
+
+/** Public match state; private HP lives in a separate document. */
 export interface PublicMatch {
   status: MatchStatus
   roomCode: string
@@ -30,6 +56,10 @@ export interface PublicMatch {
   lastMove: { from: Square; to: Square } | null
   winnerUid: string | null
   endReason: EndReason | null
+  event: EventOffer | null
+  effects: BoardEffects
+  lastEvent: EventSummary | null
+  lastEventPly: number | null
   createdAt: Timestamp | null
   updatedAt: Timestamp | null
 }

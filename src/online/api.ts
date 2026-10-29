@@ -26,7 +26,28 @@ export interface SubmitMoveResult {
   version: number
   status: MatchStatus
   endReason: string | null
+  blocked: 'shield' | null
   duplicate: boolean
+}
+
+export interface RespondToEventInput {
+  matchId: string
+  eventId: string
+  accept: boolean
+  square?: Square
+}
+
+export interface RespondToEventResult {
+  version: number
+  status: MatchStatus
+  endReason: string | null
+  outcome: 'accepted' | 'declined' | 'expired'
+  hpLoss: number | null
+  duplicate: boolean
+}
+
+export interface PrivateMatchState {
+  hp: number
 }
 
 export class OnlineError extends Error {
@@ -89,6 +110,18 @@ export function joinMatch(roomCode: string): Promise<JoinMatchResult> {
 
 export function submitMove(input: SubmitMoveInput): Promise<SubmitMoveResult> {
   return call('submitMove', input)
+}
+
+export function respondToEvent(
+  input: RespondToEventInput,
+): Promise<RespondToEventResult> {
+  return call('respondToEvent', input)
+}
+
+export function getMyPrivateMatchState(
+  matchId: string,
+): Promise<PrivateMatchState> {
+  return call('getMyPrivateMatchState', { matchId })
 }
 
 export function newRequestId(): string {

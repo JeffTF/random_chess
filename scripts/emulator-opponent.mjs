@@ -1,8 +1,15 @@
 // Joins a room as Black and (optionally) plays one move after the board
 // reaches a given version. Used to exercise the UI with a second player:
 //   node scripts/emulator-opponent.mjs <roomCode> [from] [to] [waitVersion]
+// Set BOT_TOKEN (a custom token for an existing player's uid) to reconnect
+// as the same Black account on later runs.
 import { deleteApp, initializeApp } from 'firebase/app'
-import { connectAuthEmulator, getAuth, signInAnonymously } from 'firebase/auth'
+import {
+  connectAuthEmulator,
+  getAuth,
+  signInAnonymously,
+  signInWithCustomToken,
+} from 'firebase/auth'
 import {
   connectFirestoreEmulator,
   doc,
@@ -41,7 +48,11 @@ connectFirestoreEmulator(db, '127.0.0.1', 8080)
 const functions = getFunctions(app, REGION)
 connectFunctionsEmulator(functions, '127.0.0.1', 5001)
 
-const user = (await signInAnonymously(auth)).user
+// Set BOT_TOKEN to sign in as an existing player (e.g. to keep playing as
+// Black after a previous run created that account).
+const user = process.env.BOT_TOKEN
+  ? (await signInWithCustomToken(auth, process.env.BOT_TOKEN)).user
+  : (await signInAnonymously(auth)).user
 const joinResult = await httpsCallable(functions, 'joinMatch')({ roomCode })
 const matchId = joinResult.data.matchId
 console.log(`JOINED match=${matchId} uid=${user.uid}`)
@@ -56,9 +67,37 @@ const timeout = setTimeout(() => {
   process.exit(2)
 }, 120_000)
 
+let settling = false
 const unsubscribe = onSnapshot(doc(db, 'matches', matchId), (snapshot) => {
   const match = snapshot.data()
-  if (match.version < waitVersion || match.currentTurn !== 'black') {
+
+  // Decline offers addressed to Black so the bot never stalls the room.
+  if (
+    match.status === 'event_pending' &&
+    match.event?.offeredTo === 'black' &&
+    !settling
+  ) {
+    settling = true
+    httpsCallable(functions, 'respondToEvent')({
+      matchId,
+      eventId: match.event.id,
+      accept: false,
+    })
+      .then(() => {
+        settling = false
+      })
+      .catch((error) => {
+        console.error('EVENT_FAILED', error.code, error.message)
+        process.exit(4)
+      })
+    return
+  }
+
+  if (
+    match.status !== 'active' ||
+    match.version < waitVersion ||
+    match.currentTurn !== 'black'
+  ) {
     return
   }
   unsubscribe()

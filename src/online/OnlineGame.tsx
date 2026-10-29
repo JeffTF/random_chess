@@ -1,13 +1,22 @@
 import type { Color, Square } from 'chess.js'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { legalMovesFor, pieceAt } from '../game/ChaosChessGame'
+import { EVENT_CATALOGUE_BY_KIND } from '../game/events'
 import type { LegalMove, PromotionPiece } from '../game/types'
 import { ChessBoard } from '../ui/ChessBoard'
+import { EffectsPanel } from '../ui/EffectsPanel'
+import { EventModal } from '../ui/EventModal'
+import { HpPanel } from '../ui/HpPanel'
 import { MoveHistory } from '../ui/MoveHistory'
 import { PromotionDialog } from '../ui/PromotionDialog'
 import { TransformationSummary } from '../ui/TransformationSummary'
 import { statusCopy, type StatusCopy } from '../ui/statusCopy'
-import { newRequestId, OnlineError, submitMove } from './api'
+import {
+  newRequestId,
+  OnlineError,
+  respondToEvent,
+  submitMove,
+} from './api'
 import { buildMatchView } from './matchView'
 import {
   describeEndReason,
@@ -16,6 +25,7 @@ import {
   type MatchSide,
   type PublicMatch,
 } from './types'
+import { usePrivateHp } from './usePrivateHp'
 
 interface OnlineGameProps {
   matchId: string
@@ -48,6 +58,7 @@ export function OnlineGame({
   const mySide = sideForUid(match, uid)
   const myColor: Color | null = mySide ? sideToColor(mySide) : null
   const view = useMemo(() => buildMatchView(match), [match])
+  const privateHp = usePrivateHp(matchId, match.version, mySide !== null)
 
   const [selected, setSelected] = useState<Square | null>(null)
   const [legalMoves, setLegalMoves] = useState<readonly LegalMove[]>([])
@@ -56,7 +67,15 @@ export function OnlineGame({
     to: Square
   } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
+  const [eventPending, setEventPending] = useState(false)
+  const settlingEventRef = useRef<string | null>(null)
+
+  const offer = match.event
+  const eventDefinition = offer ? EVENT_CATALOGUE_BY_KIND[offer.kind] : null
+  const offeredToMe =
+    offer !== null && mySide !== null && offer.offeredTo === mySide
 
   // Every server-confirmed move replaces this state, so drop any stale
   // local selection when a new version arrives.
@@ -66,17 +85,75 @@ export function OnlineGame({
     setPromotion(null)
   }, [match.version])
 
-  const copy: StatusCopy = view.gameStatus
-    ? statusCopy(view.gameStatus, view.chess.turn())
-    : {
-        headline: `Match over — ${describeEndReason(match.endReason)}`,
-        detail: 'The server ended this match. The final position is below.',
-        tone: 'finished',
-      }
+  useEffect(() => {
+    if (!notice) {
+      return
+    }
+    const timer = window.setTimeout(() => setNotice(null), 6000)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
+  // Either client may settle an expired offer, so a tab left open keeps the
+  // match moving even if the player who was offered the event walks away.
+  useEffect(() => {
+    if (match.status !== 'event_pending' || !match.event) {
+      return
+    }
+    const eventId = match.event.id
+    const remainingMs = match.event.expiresAtMs - Date.now()
+    const timer = window.setTimeout(
+      () => {
+        if (settlingEventRef.current === eventId) {
+          return
+        }
+        settlingEventRef.current = eventId
+        respondToEvent({ matchId, eventId, accept: false })
+          .catch((caught: unknown) => {
+            if (
+              caught instanceof OnlineError &&
+              caught.reason === 'event-not-pending'
+            ) {
+              return
+            }
+            setError(
+              'The event expired, but the match could not resume. It will retry on your next move.',
+            )
+          })
+          .finally(() => {
+            settlingEventRef.current = null
+          })
+      },
+      Math.max(remainingMs + 500, 500),
+    )
+    return () => window.clearTimeout(timer)
+  }, [match.status, match.event, matchId])
+
+  const copy: StatusCopy =
+    match.status === 'event_pending' && offer && eventDefinition
+      ? {
+          headline: offeredToMe
+            ? `Event: ${eventDefinition.name}`
+            : `Opponent is deciding: ${eventDefinition.name}`,
+          detail: offeredToMe
+            ? 'Answer the event to resume the match.'
+            : 'The board resumes when they answer or the timer runs out.',
+          tone: 'event',
+        }
+      : view.gameStatus
+        ? statusCopy(view.gameStatus, view.chess.turn())
+        : {
+            headline: `Match over — ${describeEndReason(match.endReason)}`,
+            detail: 'The server ended this match. The final position is below.',
+            tone: 'finished',
+          }
 
   const isMyTurn = mySide !== null && match.currentTurn === mySide
   const interactive =
-    match.status === 'active' && isMyTurn && !pending && promotion === null
+    match.status === 'active' &&
+    isMyTurn &&
+    !pending &&
+    !eventPending &&
+    promotion === null
   const finished = match.status === 'finished'
 
   function clearSelection() {
@@ -92,7 +169,7 @@ export function OnlineGame({
     setPending(true)
     setError(null)
     try {
-      await submitMove({
+      const result = await submitMove({
         matchId,
         requestId: newRequestId(),
         from,
@@ -100,6 +177,11 @@ export function OnlineGame({
         promotion: promotionPiece,
         expectedVersion: match.version,
       })
+      if (result.blocked === 'shield') {
+        setNotice(
+          'A shield cancelled that capture. The shield is spent; choose another move.',
+        )
+      }
     } catch (caught) {
       setError(
         caught instanceof OnlineError
@@ -110,6 +192,37 @@ export function OnlineGame({
       setPending(false)
       setPromotion(null)
       clearSelection()
+    }
+  }
+
+  async function answerEvent(accept: boolean, square?: Square) {
+    if (!offer) {
+      return
+    }
+    setEventPending(true)
+    setError(null)
+    try {
+      const result = await respondToEvent({
+        matchId,
+        eventId: offer.id,
+        accept,
+        square,
+      })
+      if (result.hpLoss !== null && result.hpLoss > 0) {
+        setNotice(`The shared loss took ${result.hpLoss} HP from you.`)
+      } else if (accept && result.outcome === 'accepted') {
+        setNotice('Event activated.')
+      } else if (result.outcome === 'expired') {
+        setNotice('The event timed out and the match resumed.')
+      }
+    } catch (caught) {
+      setError(
+        caught instanceof OnlineError
+          ? caught.message
+          : 'The event could not be answered.',
+      )
+    } finally {
+      setEventPending(false)
     }
   }
 
@@ -184,7 +297,11 @@ export function OnlineGame({
               <p className="status-label">Status</p>
               <h2 className="status-headline">{copy.headline}</h2>
               <p className="status-detail">
-                {pending ? 'Sending your move…' : copy.detail}
+                {pending
+                  ? 'Sending your move…'
+                  : eventPending
+                    ? 'Sending your answer…'
+                    : copy.detail}
               </p>
             </div>
             <div className="side-indicator" aria-label="Sides">
@@ -228,6 +345,12 @@ export function OnlineGame({
             </div>
           )}
 
+          {notice && (
+            <div className="info-banner" role="status">
+              {notice}
+            </div>
+          )}
+
           <ChessBoard
             board={view.board}
             turn={view.chess.turn()}
@@ -236,19 +359,32 @@ export function OnlineGame({
             lastMove={match.lastMove}
             inCheck={view.chess.isCheck()}
             interactive={interactive}
+            effects={match.effects}
             onSquareClick={handleSquareClick}
           />
 
           <p className="board-hint">
             {finished
               ? 'The match is complete. Start another room to play again.'
-              : isMyTurn
-                ? 'Your move. The server validates the move and chooses the transformation.'
-                : 'Waiting for your opponent to move. The board updates live.'}
+              : match.status === 'event_pending'
+                ? offeredToMe
+                  ? 'Answer the chaos event in the dialog to continue.'
+                  : 'Waiting for your opponent to answer the chaos event.'
+                : isMyTurn
+                  ? 'Your move. The server validates the move and chooses the transformation.'
+                  : 'Waiting for your opponent to move. The board updates live.'}
           </p>
         </section>
 
         <aside className="sidebar">
+          <HpPanel hp={privateHp.hp} side={mySide} error={privateHp.error} />
+
+          <EffectsPanel
+            effects={match.effects}
+            lastEvent={match.lastEvent}
+            uid={uid}
+          />
+
           <TransformationSummary history={match.history} />
 
           <section className="panel history-panel">
@@ -291,6 +427,24 @@ export function OnlineGame({
           }}
         />
       )}
+
+      {offer &&
+        eventDefinition &&
+        offeredToMe &&
+        match.status === 'event_pending' && (
+          <EventModal
+            offer={offer}
+            definition={eventDefinition}
+            hp={privateHp.hp}
+            myColor={myColor ?? 'w'}
+            board={view.board}
+            effects={match.effects}
+            pending={eventPending}
+            onAccept={(square) => void answerEvent(true, square)}
+            onDecline={() => void answerEvent(false)}
+            onExpire={() => void answerEvent(false)}
+          />
+        )}
     </>
   )
 }

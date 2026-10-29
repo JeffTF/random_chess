@@ -1,6 +1,7 @@
 import { doc, onSnapshot } from 'firebase/firestore'
 import { useEffect, useState } from 'react'
 import { db } from '../firebase/client'
+import { normalizePublicMatch } from './normalize'
 import type { PublicMatch } from './types'
 
 export interface MatchState {
@@ -36,7 +37,7 @@ export function useMatch(matchId: string | null): MatchState {
           return
         }
         setState({
-          match: snapshot.data() as PublicMatch,
+          match: normalizePublicMatch(snapshot.data()),
           loading: false,
           error: null,
         })

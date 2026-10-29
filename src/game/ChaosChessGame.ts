@@ -101,11 +101,15 @@ export class ChaosChessGame {
     return legalMovesFor(this.chess, square)
   }
 
-  move(
+  /**
+   * Throws a ChessRuleError when the move is not legal in the current
+   * position. The move itself is not applied.
+   */
+  validateMove(
     from: Square,
     to: Square,
     promotion?: PromotionPiece,
-  ): MoveRecord {
+  ): void {
     const status = this.computeStatus()
     if (status.kind !== 'active') {
       throw new ChessRuleError('game-over', 'The game is already over.')
@@ -147,6 +151,14 @@ export class ChaosChessGame {
         'That promotion choice is not valid for this move.',
       )
     }
+  }
+
+  move(
+    from: Square,
+    to: Square,
+    promotion?: PromotionPiece,
+  ): MoveRecord {
+    this.validateMove(from, to, promotion)
 
     const beforeFen = this.chess.fen()
     let applied: Move

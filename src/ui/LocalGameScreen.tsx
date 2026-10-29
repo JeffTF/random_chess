@@ -227,8 +227,8 @@ export function LocalGameScreen({
           <section className="panel note-panel">
             <p className="note-label">Scope</p>
             <p>
-              Local chess core and post-move transformations. HP, random
-              events, and online rooms belong to later phases.
+              Local hotseat practice. HP tracking and online matches live in
+              the online mode; random events belong to a later phase.
             </p>
           </section>
         </aside>

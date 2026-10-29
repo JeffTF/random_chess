@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit",
     "build:functions": "npm --prefix functions run build",
     "typecheck:functions": "npm --prefix functions run typecheck",
-    "test:emulator": "node scripts/phase2-check.mjs",
+    "test:emulator": "node scripts/phase2-check.mjs && node scripts/phase3-check.mjs && node scripts/phase4-check.mjs",
     "emulators": "npm run build:functions && firebase emulators:start"
   },
   "dependencies": {
