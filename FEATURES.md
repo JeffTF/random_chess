@@ -18,13 +18,14 @@ deployed to the live Firebase project yet.
 | Event scheduling, offers, timeout, atomic resolution | Done |
 | All eight chaos events | Done |
 | Emulator integration tests | Done (Phases 2, 3, 4–5) |
-| Production deployment (Hosting + Functions + rules) | **Not done** |
+| Production deployment | Done: https://chaos-chess-jefftf.netlify.app (Netlify Functions API, Firebase Auth + Firestore, rules live) |
 | App Check, rate limiting, rematch, spectators | **Not done** |
 
 ## Architecture and trust model
 
 - React 19 + Vite + TypeScript, chess.js 1.4 for all chess legality.
-- Cloud Functions v2 callables own the board: clients submit intents only.
+- The server owns the board: clients submit intents only. The same handlers
+  run as Firebase callables locally and as Netlify Functions in production.
 - Firestore stores public match state; per-player HP lives in owner-only
   documents. All authoritative writes happen with the Admin SDK.
 - Randomness (transformations, event scheduling, damage rolls, bomb targets)
@@ -199,15 +200,29 @@ without changing the piece.
 - No composite Firestore indexes are required (room lookup uses one equality
   filter).
 
-### 10. Cloud Functions
+### 10. Server API
 
 - `createMatch`, `joinMatch`, `submitMove`, `respondToEvent`,
-  `getMyPrivateMatchState` (region `asia-southeast1` by default).
-- Every callable authenticates, validates payload types/patterns, checks
+  `getMyPrivateMatchState`.
+- `functions/src/api.ts` holds the transport-neutral handlers; two thin
+  adapters expose them:
+  - `functions/src/index.ts` — Firebase callables (region
+    `asia-southeast1` by default) for the emulator workflow.
+  - `functions/src/http.ts` + `netlify/functions/*` — POST endpoints at
+    `/api/<action>` that verify the Firebase ID token from the
+    `Authorization: Bearer` header and map errors to HTTP status codes.
+    Tokens are checked in `functions/src/idToken.ts` (RS256 signature
+    against Google's `securetoken` certificates plus issuer/audience/
+    lifetime/subject checks) because `firebase-admin/auth` drags in an
+    ESM-only dependency the Netlify runtime cannot load.
+- Every handler authenticates, validates payload types/patterns, checks
   membership and state, and applies changes in a transaction.
 - Stable error reasons (`not-a-member`, `wrong-turn`, `stale-version`,
   `invalid-move`, `event-pending`, `event-not-pending`, `not-event-target`,
   `cannot-afford`, `invalid-selection`) without leaking HP.
+- Netlify functions use a base64 service account from
+  `FIREBASE_SERVICE_ACCOUNT_B64` only; no Admin credentials reach the
+  browser.
 
 ### 11. Configuration and local setup
 
@@ -226,9 +241,9 @@ without changing the piece.
 
 Automated:
 
-- `npm test` — **72 unit tests** across 6 files: chess/transformation,
+- `npm test` — **82 unit tests** across 7 files: chess/transformation,
   FEN handling, restore, random, HP, server move rules (17), event rules (18),
-  and scheduling/resolution of all eight events.
+  scheduling/resolution of all eight events, and ID-token verification (10).
 - `npm run typecheck`, `npm run typecheck:functions`, `npm run build` — pass
   (build warns only about the >500 kB bundle chunk).
 - `npm run test:emulator` — three scripts against the live emulator suite:
@@ -238,6 +253,9 @@ Automated:
   - `phase4-check.mjs`: friendly-bomb damage, shield block, protect-piece
     permissions/cost/idempotency, offer expiry, no HP in event or public data.
   All pass.
+- `npm run test:netlify` — bundles `functions/src/http.ts`, serves it locally,
+  and drives the five HTTP actions with real anonymous ID tokens against the
+  emulators (auth, membership, idempotency, private HP). Passes.
 
 Manual browser verification (emulator):
 
@@ -256,15 +274,27 @@ Manual browser verification (emulator):
 
 ### Phase 6 — required for the MVP acceptance criteria
 
-1. **Deploy to the real Firebase project** (`random-chess-4a16d`,
-   `asia-southeast1`): Blaze plan, anonymous auth enabled, Firestore created,
-   `firebase login`, then
-   `npx firebase deploy --only firestore:rules,functions,hosting`.
-   The shareable production URL and production end-to-end check are still
-   outstanding.
-2. **Production smoke test**: two browsers join the deployed URL, play a
-   move, accept an event, refresh/reconnect, and confirm the game finishes
-   correctly.
+1. **Netlify deploy — done**: https://chaos-chess-jefftf.netlify.app serves the
+   build and the five `/api/*` functions. Anonymous auth is enabled, the six
+   `VITE_FIREBASE_*` variables and `FIREBASE_SERVICE_ACCOUNT_B64` are set,
+   Firestore rules are live, and the Netlify domain is in the Firebase
+   authorized-domain list.
+2. **Production smoke test — done**: verified against the live site —
+   anonymous sign-in, room creation and invite link, join through the API,
+   server-side move validation (out-of-turn rejected), a transformation
+   (pawn→knight) shown on both sides, realtime sync, reload/reconnect, an
+   event offer accepted in the UI (Swap Sides) with HP 100→50, the side swap
+   applied, the opponent's HP still hidden, and the opponent's private HP
+   unchanged. A production rules check confirmed non-members get 403, the
+   public match document has no HP field, owners can read their private
+   document, and client HP writes are denied. A scripted two-player game
+   (match `YT4Ch4cXpzF3jQNwH1mk`, room ZNG8ZK) played to a natural finish:
+   accepting Shared HP Loss drained the last 50 HP and the API reported
+   `status: "finished"`, `endReason: "hp-depleted"`, with the surviving
+   player as `winnerUid`. A checkmate finish was not observed live; because
+   the moving piece transforms after the move, mates found by the client's
+   pre-transform board often do not survive, and the checkmate ending is
+   covered by unit and emulator tests instead.
 
 ### Security and robustness
 

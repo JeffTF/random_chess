@@ -74,6 +74,7 @@ npm run typecheck
 npm run typecheck:functions
 npm run build
 npm run test:emulator     # needs the emulators running
+npm run test:netlify      # needs the emulators running; exercises the HTTP API
 ```
 
 `test:emulator` runs three scripts:
@@ -146,12 +147,66 @@ npm run test:emulator     # needs the emulators running
 
 ## Deploy
 
+Production runs on Netlify: the static build plus five Netlify Functions
+under `/api/*`. Firebase still provides Authentication, Firestore, and the
+security rules. Live at https://chaos-chess-jefftf.netlify.app.
+
 ```powershell
-npx firebase deploy --only firestore:rules,functions,hosting
+npx firebase deploy --only firestore:rules   # rules (Spark plan is fine)
+npx netlify deploy --prod --build            # site + /api functions
 ```
 
-Hosting publishes `dist` after `npm run build`. No composite Firestore
-indexes are required yet; room lookup uses a single equality filter.
+Netlify environment variables (Site configuration → Environment variables):
+
+- `FIREBASE_SERVICE_ACCOUNT_B64` — the service account key from Firebase
+  Console → Project settings → Service accounts → Generate new private key,
+  base64-encoded because dashboards and shells mangle the `\n` escapes inside
+  the JSON. Create it and store it without pasting the key anywhere:
+
+  ```bash
+  base64 -w0 key.json > key.b64
+  npx netlify env:set FIREBASE_SERVICE_ACCOUNT_B64 "$(cat key.b64)" \
+    --secret --context production
+  ```
+
+  Required for the functions to read and write Firestore with the Admin SDK.
+  Keep it server-side only; it is never sent to the browser.
+- `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`,
+  `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_STORAGE_BUCKET`,
+  `VITE_FIREBASE_MESSAGING_SENDER_ID`, `VITE_FIREBASE_APP_ID` — the same
+  public web config as `.env.local`, because `.env.local` is not committed.
+- `VITE_API_BASE_URL=/api` and `NODE_VERSION=24` are already set in
+  `netlify.toml`.
+
+Firebase prerequisites on a fresh project:
+
+1. Authentication → Get started, then Sign-in method → Anonymous → Enable.
+   A project that only ever used Hosting/Firestore has no Auth config, and
+   sign-in fails with `CONFIGURATION_NOT_FOUND`.
+2. Authentication → Settings → Authorized domains → add the Netlify domain.
+   Anonymous sign-in does not check the origin, but any future
+   OAuth/email-link sign-in would fail with `auth/unauthorized-domain`.
+
+`netlify.toml` maps each `/api/<action>` path to the matching function in
+`netlify/functions/`. Those files are thin wrappers; the handlers live in
+`functions/src/api.ts` and the HTTP layer in `functions/src/http.ts`, so the
+same rules run locally through Firebase callables and in production through
+Netlify.
+
+The Netlify adapter verifies ID tokens in `functions/src/idToken.ts` instead
+of `firebase-admin/auth`: the Admin auth module requires the ESM-only `jose`
+package through `jwks-rsa`, which the Netlify function runtime refuses to
+load. The verifier checks the RS256 signature against Google's published
+`securetoken` certificates and validates `aud`, `iss`, `exp`, `iat`, and
+`sub`; under the Auth emulator it accepts the emulator's unsigned tokens,
+matching the Admin SDK.
+
+Cloud Functions are no longer required for production. They remain in
+`functions/` for the emulator workflow and for anyone on the Blaze plan
+who prefers `npx firebase deploy --only functions`.
+
+No composite Firestore indexes are required yet; room lookup uses a single
+equality filter.
 
 ## Structure
 
@@ -168,8 +223,16 @@ indexes are required yet; room lookup uses a single equality filter.
   unit tested with injected randomness.
 - `functions/src/eventRules.ts` — event eligibility, offers, expiry, and
   all eight effect resolutions; unit tested with injected randomness.
-- `functions/src/index.ts` — `createMatch`, `joinMatch`, `submitMove`,
-  `respondToEvent`, `getMyPrivateMatchState`.
+- `functions/src/index.ts` — Cloud Functions callables used by the
+  emulator workflow.
+- `functions/src/api.ts` — transport-neutral
+  `createMatch`/`joinMatch`/`submitMove`/`respondToEvent`/
+  `getMyPrivateMatchState` handlers shared by callables and Netlify.
+- `functions/src/http.ts` — Netlify Functions adapter: verifies the Firebase
+  ID token, maps `ApiError` to HTTP status codes, returns only authorized
+  data.
+- `netlify/functions/` — one thin entry per action; `netlify.toml` holds the
+  build, redirects, and `VITE_API_BASE_URL`.
 - `firestore.rules` — players may read their match and its event records;
   each private document is owner-only; all client writes are denied.
 

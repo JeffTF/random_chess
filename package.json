@@ -13,11 +13,13 @@
     "build:functions": "npm --prefix functions run build",
     "typecheck:functions": "npm --prefix functions run typecheck",
     "test:emulator": "node scripts/phase2-check.mjs && node scripts/phase3-check.mjs && node scripts/phase4-check.mjs",
+    "test:netlify": "node scripts/netlify-check.mjs",
     "emulators": "npm run build:functions && firebase emulators:start"
   },
   "dependencies": {
     "chess.js": "^1.4.0",
     "firebase": "^13.1.0",
+    "firebase-admin": "^14.5.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },

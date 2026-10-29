@@ -1,0 +1,48 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  # Node 24 supports require() of ESM, which firebase-admin's auth chain needs.
+  NODE_VERSION = "24"
+  # The SPA calls the Netlify Functions below instead of Firebase callables.
+  VITE_API_BASE_URL = "/api"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+[[redirects]]
+  from = "/api/createMatch"
+  to = "/.netlify/functions/createMatch"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/joinMatch"
+  to = "/.netlify/functions/joinMatch"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/submitMove"
+  to = "/.netlify/functions/submitMove"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/respondToEvent"
+  to = "/.netlify/functions/respondToEvent"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/getMyPrivateMatchState"
+  to = "/.netlify/functions/getMyPrivateMatchState"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
