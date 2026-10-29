@@ -1,6 +1,8 @@
 node_modules
 dist
 coverage
+functions/lib
+.firebase
 *.local
 .env
 .env.*

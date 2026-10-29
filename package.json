@@ -9,10 +9,15 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:functions": "npm --prefix functions run build",
+    "typecheck:functions": "npm --prefix functions run typecheck",
+    "test:emulator": "node scripts/phase2-check.mjs",
+    "emulators": "npm run build:functions && firebase emulators:start"
   },
   "dependencies": {
     "chess.js": "^1.4.0",
+    "firebase": "^13.1.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
@@ -20,6 +25,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
+    "firebase-tools": "^15.34.2",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
     "vitest": "^5.0.5"

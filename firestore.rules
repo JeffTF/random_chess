@@ -1,0 +1,36 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function matchData(matchId) {
+      return get(/databases/$(database)/documents/matches/$(matchId)).data;
+    }
+
+    function isPlayer(matchId) {
+      return signedIn() &&
+        (matchData(matchId).playerWhiteUid == request.auth.uid ||
+         matchData(matchId).playerBlackUid == request.auth.uid);
+    }
+
+    match /matches/{matchId} {
+      // Only the two players can see the board. Private documents are
+      // restricted further so HP never reaches the opponent's client.
+      allow read: if isPlayer(matchId);
+      allow write: if false;
+
+      match /private/{uid} {
+        allow read: if isPlayer(matchId) && request.auth.uid == uid;
+        allow write: if false;
+      }
+
+      match /moves/{moveId} {
+        allow read: if isPlayer(matchId);
+        allow write: if false;
+      }
+    }
+  }
+}

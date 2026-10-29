@@ -331,3 +331,115 @@ describe('local chaos chess game', () => {
     expect(() => new Chess(game.fen)).not.toThrow()
   })
 })
+
+describe('restoring a persisted game', () => {
+  const START_FEN = '7k/8/8/8/8/8/P7/2R1K3 w - - 0 1'
+  const CYCLE: Array<[Square, Square]> = [
+    ['c1', 'd1'],
+    ['h8', 'g8'],
+    ['d1', 'c1'],
+    ['g8', 'h8'],
+  ]
+
+  function restore(game: ChaosChessGame): ChaosChessGame {
+    const snapshot = game.snapshot()
+    return new ChaosChessGame({
+      fen: snapshot.fen,
+      startFen: START_FEN,
+      history: snapshot.history,
+      version: snapshot.version,
+      random: fixed(0.9),
+    })
+  }
+
+  it('rebuilds an in-progress transformed game from its stored state', () => {
+    const original = new ChaosChessGame({
+      fen: START_FEN,
+      random: fixed(0.9),
+    })
+    original.move('c1', 'd1')
+    original.move('h8', 'g8')
+
+    const expected = original.snapshot()
+    const restored = restore(original)
+    const actual = restored.snapshot()
+
+    expect(actual.fen).toBe(expected.fen)
+    expect(actual.turn).toBe(expected.turn)
+    expect(actual.version).toBe(expected.version)
+    expect(actual.history).toEqual(expected.history)
+    expect(actual.lastMove).toEqual(expected.lastMove)
+    expect(actual.status).toEqual(expected.status)
+    expect(actual.board).toEqual(expected.board)
+  })
+
+  it('keeps threefold repetition detection across a restore', () => {
+    const original = new ChaosChessGame({
+      fen: START_FEN,
+      random: fixed(0.9),
+    })
+    for (const [from, to] of CYCLE) {
+      original.move(from, to)
+    }
+
+    const restored = restore(original)
+    expect(restored.snapshot().status.kind).toBe('active')
+
+    for (const [from, to] of CYCLE) {
+      restored.move(from, to)
+    }
+
+    expect(restored.snapshot().status).toEqual({
+      kind: 'draw',
+      reason: 'threefold-repetition',
+    })
+  })
+
+  it('continues enforcing turn order and legality after a restore', () => {
+    const original = new ChaosChessGame({
+      fen: START_FEN,
+      random: fixed(0.9),
+    })
+    original.move('c1', 'd1')
+    original.move('h8', 'g8')
+
+    const restored = restore(original)
+
+    expect(getRuleError(() => restored.move('g8', 'h8')).code).toBe(
+      'wrong-turn',
+    )
+    expect(getRuleError(() => restored.move('d1', 'c3')).code).toBe(
+      'illegal-move',
+    )
+    expect(() => restored.move('d1', 'c1')).not.toThrow()
+    expect(restored.history).toHaveLength(3)
+    expect(restored.snapshot().version).toBe(3)
+  })
+
+  it('rejects stored state that does not match the supplied position', () => {
+    const original = new ChaosChessGame({
+      fen: START_FEN,
+      random: fixed(0.9),
+    })
+    original.move('c1', 'd1')
+
+    expect(
+      () =>
+        new ChaosChessGame({
+          fen: START_FEN,
+          startFen: START_FEN,
+          history: original.history,
+          random: fixed(0.9),
+        }),
+    ).toThrow(/does not match/)
+
+    expect(
+      () =>
+        new ChaosChessGame({
+          fen: original.fen,
+          history: original.history,
+          random: fixed(0.9),
+        }),
+    ).toThrow(/require both fen and startFen/)
+  })
+})

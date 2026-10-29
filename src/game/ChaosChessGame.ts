@@ -23,6 +23,9 @@ import type {
 
 export interface ChaosChessGameOptions {
   fen?: string
+  startFen?: string
+  history?: readonly MoveRecord[]
+  version?: number
   random?: RandomSource
   transformationConfig?: TransformationConfig
 }
@@ -40,15 +43,35 @@ export class ChaosChessGame {
   private readonly random: RandomSource
   private readonly transformationConfig: TransformationConfig
   private readonly positionTracker: PositionTracker
-  private readonly moveHistory: MoveRecord[] = []
-  private currentVersion = 0
+  private readonly moveHistory: MoveRecord[]
+  private currentVersion: number
 
   constructor(options: ChaosChessGameOptions = {}) {
     this.chess = new Chess(options.fen)
     this.random = options.random ?? Math.random
     this.transformationConfig =
       options.transformationConfig ?? GAME_CONFIG.transformation
-    this.positionTracker = new PositionTracker(this.chess.fen())
+
+    const history = options.history ?? []
+    const lastRecord = history[history.length - 1]
+    if (history.length > 0) {
+      if (!options.fen || !options.startFen) {
+        throw new Error('Restored games require both fen and startFen.')
+      }
+      if (lastRecord?.fen !== this.chess.fen()) {
+        throw new Error('Stored history does not match the supplied position.')
+      }
+    }
+
+    this.moveHistory = [...history]
+    this.currentVersion = options.version ?? this.moveHistory.length
+
+    this.positionTracker = new PositionTracker(
+      options.startFen ?? this.chess.fen(),
+    )
+    for (const record of this.moveHistory) {
+      this.positionTracker.record(record.fen)
+    }
   }
 
   get turn(): Color {
@@ -75,31 +98,7 @@ export class ChaosChessGame {
     if (this.isFinished) {
       return []
     }
-
-    const grouped = new Map<
-      Square,
-      { capture: boolean; promotions: Set<PromotionPiece> }
-    >()
-
-    for (const move of this.chess.moves({ square, verbose: true })) {
-      const entry = grouped.get(move.to) ?? {
-        capture: move.captured !== undefined,
-        promotions: new Set<PromotionPiece>(),
-      }
-
-      if (move.promotion) {
-        entry.promotions.add(move.promotion as PromotionPiece)
-      }
-      grouped.set(move.to, entry)
-    }
-
-    return [...grouped.entries()].map(([to, entry]) => ({
-      to,
-      capture: entry.capture,
-      promotions: PROMOTION_PIECES.filter((piece) =>
-        entry.promotions.has(piece),
-      ),
-    }))
+    return legalMovesFor(this.chess, square)
   }
 
   move(
@@ -283,6 +282,33 @@ export class ChaosChessGame {
 
     return { kind: 'active', inCheck: this.chess.isCheck() }
   }
+}
+
+export function legalMovesFor(chess: Chess, square: Square): LegalMove[] {
+  const grouped = new Map<
+    Square,
+    { capture: boolean; promotions: Set<PromotionPiece> }
+  >()
+
+  for (const move of chess.moves({ square, verbose: true })) {
+    const entry = grouped.get(move.to) ?? {
+      capture: move.captured !== undefined,
+      promotions: new Set<PromotionPiece>(),
+    }
+
+    if (move.promotion) {
+      entry.promotions.add(move.promotion as PromotionPiece)
+    }
+    grouped.set(move.to, entry)
+  }
+
+  return [...grouped.entries()].map(([to, entry]) => ({
+    to,
+    capture: entry.capture,
+    promotions: PROMOTION_PIECES.filter((piece) =>
+      entry.promotions.has(piece),
+    ),
+  }))
 }
 
 export function pieceAt(
