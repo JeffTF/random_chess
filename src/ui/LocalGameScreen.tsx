@@ -11,8 +11,10 @@ import { statusCopy } from './statusCopy'
 
 export function LocalGameScreen({
   onPlayOnline,
+  onShowEvents,
 }: {
   onPlayOnline: () => void
+  onShowEvents: () => void
 }) {
   const [game, setGame] = useState(() => new ChaosChessGame())
   const [snapshot, setSnapshot] = useState<GameSnapshot>(() =>
@@ -132,6 +134,13 @@ export function LocalGameScreen({
           <button
             type="button"
             className="new-game-button"
+            onClick={onShowEvents}
+          >
+            All events
+          </button>
+          <button
+            type="button"
+            className="new-game-button"
             onClick={onPlayOnline}
           >
             Play online
@@ -227,8 +236,8 @@ export function LocalGameScreen({
           <section className="panel note-panel">
             <p className="note-label">Scope</p>
             <p>
-              Local hotseat practice. HP tracking and online matches live in
-              the online mode; random events belong to a later phase.
+              Local hotseat practice. HP tracking and random events only
+              happen in online matches.
             </p>
           </section>
         </aside>

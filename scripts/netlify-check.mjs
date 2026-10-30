@@ -19,6 +19,7 @@ const ACTIONS = [
   'joinMatch',
   'submitMove',
   'respondToEvent',
+  'resignMatch',
   'getMyPrivateMatchState',
 ]
 
@@ -183,6 +184,22 @@ try {
   assert.equal(typeof privateState.body.hp, 'number')
   assert.ok(privateState.body.hp <= 100)
   pass('private HP is returned to its owner only')
+
+  const resigned = await api(bob.token, 'resignMatch', { matchId })
+  assert.equal(resigned.status, 200, JSON.stringify(resigned.body))
+  assert.equal(resigned.body.status, 'finished')
+  assert.equal(resigned.body.endReason, 'resignation')
+  pass('resignMatch forfeits the match')
+
+  const secondResign = await api(alice.token, 'resignMatch', { matchId })
+  assert.equal(secondResign.status, 412)
+  assert.equal(secondResign.body.error.reason, 'match-not-active')
+  pass('a finished match rejects further resignations')
+
+  const strangerResign = await api(eve.token, 'resignMatch', { matchId })
+  assert.equal(strangerResign.status, 403)
+  assert.equal(strangerResign.body.error.reason, 'not-a-member')
+  pass('non-members cannot resign')
 } finally {
   server.close()
   for (const app of clients) {

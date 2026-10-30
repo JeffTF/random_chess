@@ -1,5 +1,6 @@
+import { doc, onSnapshot } from 'firebase/firestore'
 import { useEffect, useState } from 'react'
-import { getMyPrivateMatchState, OnlineError } from './api'
+import { db } from '../firebase/client'
 
 export interface PrivateHp {
   hp: number | null
@@ -7,47 +8,40 @@ export interface PrivateHp {
 }
 
 /**
- * Loads the caller's own HP. Refetches whenever the authoritative match
- * version changes, so server-side HP changes appear after the move that
- * caused them.
+ * Subscribes to the caller's own private document. The security rules only
+ * allow the owner to read it, so the opponent's HP never reaches this client.
+ * A listener replaces the old per-version fetch, which cost one serverless
+ * invocation for every move in the match.
  */
 export function usePrivateHp(
   matchId: string,
-  version: number,
+  uid: string | null,
   enabled: boolean,
 ): PrivateHp {
   const [hp, setHp] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!enabled) {
+    setHp(null)
+    setError(null)
+    if (!enabled || !uid) {
       return
     }
-    let active = true
 
-    getMyPrivateMatchState(matchId)
-      .then((state) => {
-        if (!active) {
-          return
-        }
-        setHp(state.hp)
+    const unsubscribe = onSnapshot(
+      doc(db, 'matches', matchId, 'private', uid),
+      (snapshot) => {
+        const value = snapshot.data()?.hp
+        setHp(typeof value === 'number' ? value : null)
         setError(null)
-      })
-      .catch((caught: unknown) => {
-        if (!active) {
-          return
-        }
-        setError(
-          caught instanceof OnlineError
-            ? caught.message
-            : 'Could not load your HP.',
-        )
-      })
+      },
+      () => {
+        setError('Could not load your HP. Check your connection.')
+      },
+    )
 
-    return () => {
-      active = false
-    }
-  }, [matchId, version, enabled])
+    return unsubscribe
+  }, [matchId, uid, enabled])
 
   return { hp, error }
 }

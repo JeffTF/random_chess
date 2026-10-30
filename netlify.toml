@@ -37,6 +37,12 @@
   force = true
 
 [[redirects]]
+  from = "/api/resignMatch"
+  to = "/.netlify/functions/resignMatch"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/api/getMyPrivateMatchState"
   to = "/.netlify/functions/getMyPrivateMatchState"
   status = 200

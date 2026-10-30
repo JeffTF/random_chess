@@ -36,10 +36,14 @@ export function useMatch(matchId: string | null): MatchState {
           })
           return
         }
-        setState({
-          match: normalizePublicMatch(snapshot.data()),
-          loading: false,
-          error: null,
+        const next = normalizePublicMatch(snapshot.data())
+        setState((previous) => {
+          // A reconnect can re-deliver an older cached snapshot; the server
+          // only moves forward, so never let the board go backwards.
+          if (previous.match && next.version < previous.match.version) {
+            return previous
+          }
+          return { match: next, loading: false, error: null }
         })
       },
       () => {

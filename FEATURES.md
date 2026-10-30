@@ -1,10 +1,10 @@
 # Chaos Chess — Feature Inventory and Remaining Work
 
-Status date: 2026-10-29
+Status date: 2026-10-30
 
-Implemented and verified through **Phase 5**. All verification is against the
-local Firebase Emulator Suite (and manual browser play); nothing has been
-deployed to the live Firebase project yet.
+Implemented and verified through **Phase 5**. Verification covers unit tests,
+the Firebase Emulator Suite, manual browser play, and the deployed Netlify
+site.
 
 ## Status at a glance
 
@@ -14,11 +14,15 @@ deployed to the live Firebase project yet.
 | Local hotseat practice mode | Done |
 | Anonymous auth, rooms, invite links, reconnect | Done |
 | Server-authoritative moves, versioning, idempotency | Done |
+| Optimistic local move preview with rollback/reconciliation | Done (Phase 2 latency work) |
+| Single HP listener, transient retries, cold-start prewarm | Done (latency Phases 3–4) |
 | Private HP (100/player, opponent hidden) | Done (Phase 3) |
 | Event scheduling, offers, timeout, atomic resolution | Done |
 | All eight chaos events | Done |
+| Match-over result dialog, resignation/forfeit | Done |
+| Event catalogue screen (`?events=1`) | Done |
 | Emulator integration tests | Done (Phases 2, 3, 4–5) |
-| Production deployment | Done: https://chaos-chess-jefftf.netlify.app (Netlify Functions API, Firebase Auth + Firestore, rules live) |
+| Production deployment | Done: https://rngchess.netlify.app (Netlify Functions API, Firebase Auth + Firestore, rules live) |
 | App Check, rate limiting, rematch, spectators | **Not done** |
 
 ## Architecture and trust model
@@ -184,7 +188,34 @@ without changing the piece.
 - Status/notice banners for opponent-deciding, expired offers, blocked
   captures, and event outcomes.
 - End banner with winner/reason (you win, you lose, draw) and back to lobby.
+- Match-over dialog with the outcome (You win / You lose / Draw) and end
+  reason; "View final board" dismisses it, "Back to lobby" exits. After a
+  resignation it appears only for the winner, because leaving is a
+  deliberate forfeit by the other player.
+- Leave match: an active match shows a confirm prompt, then calls
+  `resignMatch`; the server awards the win to the opponent.
+- Event catalogue screen at `?events=1` (button on both the lobby and the
+  local screen) listing all eight events with costs, descriptions, and
+  targeting rules. Opening it preserves the previous screen's state.
 - Lobby with create, join, invite-link copy, connection/loading/error states.
+- Optimistic move preview: the mover's board applies a locally legal move
+  immediately (target: under 100 ms) while the server validates it. The
+  preview shows the untransformed piece; the authoritative snapshot replaces
+  it (transformation, turn, effects, events). The board is locked until the
+  snapshot arrives, the pending move is tracked by its `requestId`, and a
+  second tap cannot duplicate the submission. If the server rejects the
+  move, the preview is dropped, the board reverts, and the reason is shown.
+- Moves are retried at most twice, with the same `requestId`, only when the
+  failure is transient (dropped connection, timeout, 5xx). Illegal moves,
+  stale versions, wrong turns, and pending events are never retried. The
+  server stores the player and squares with each receipt and rejects a reused
+  id that describes a different move.
+- The player's HP comes from one owner-only Firestore listener rather than a
+  server call per move. Snapshots are applied in version order, so a
+  reconnecting client cannot flash an older board.
+- While a room waits for an opponent, the client prewarms `submitMove` once.
+  The function cold start is paid on the waiting screen, not on the first
+  move; the prewarm call writes nothing and only returns the current state.
 
 ### 9. Data model
 
@@ -202,7 +233,7 @@ without changing the piece.
 
 ### 10. Server API
 
-- `createMatch`, `joinMatch`, `submitMove`, `respondToEvent`,
+- `createMatch`, `joinMatch`, `submitMove`, `respondToEvent`, `resignMatch`,
   `getMyPrivateMatchState`.
 - `functions/src/api.ts` holds the transport-neutral handlers; two thin
   adapters expose them:
@@ -219,7 +250,9 @@ without changing the piece.
   membership and state, and applies changes in a transaction.
 - Stable error reasons (`not-a-member`, `wrong-turn`, `stale-version`,
   `invalid-move`, `event-pending`, `event-not-pending`, `not-event-target`,
-  `cannot-afford`, `invalid-selection`) without leaking HP.
+  `cannot-afford`, `invalid-selection`, `match-not-active`) without leaking
+  HP. Membership is checked before match status, so a stranger always gets
+  `not-a-member` even for a finished match.
 - Netlify functions use a base64 service account from
   `FIREBASE_SERVICE_ACCOUNT_B64` only; no Admin credentials reach the
   browser.
@@ -241,9 +274,10 @@ without changing the piece.
 
 Automated:
 
-- `npm test` — **82 unit tests** across 7 files: chess/transformation,
+- `npm test` — **93 unit tests** across 9 files: chess/transformation,
   FEN handling, restore, random, HP, server move rules (17), event rules (18),
-  scheduling/resolution of all eight events, and ID-token verification (10).
+  scheduling/resolution of all eight events, ID-token verification (10), and
+  optimistic move prediction (3, including illegal-move rejection).
 - `npm run typecheck`, `npm run typecheck:functions`, `npm run build` — pass
   (build warns only about the >500 kB bundle chunk).
 - `npm run test:emulator` — three scripts against the live emulator suite:
@@ -254,8 +288,13 @@ Automated:
     permissions/cost/idempotency, offer expiry, no HP in event or public data.
   All pass.
 - `npm run test:netlify` — bundles `functions/src/http.ts`, serves it locally,
-  and drives the five HTTP actions with real anonymous ID tokens against the
+  and drives the six HTTP actions with real anonymous ID tokens against the
   emulators (auth, membership, idempotency, private HP). Passes.
+- `npm run latency` — two anonymous clients, one process, one clock:
+  prewarms `submitMove`, then measures the API round trip and both clients'
+  snapshot-to-callback times and prints p50/p95/p99. Defaults to the deployed
+  site; `--base` points it at another origin and `--moves` sets the sample
+  count.
 
 Manual browser verification (emulator):
 
@@ -266,6 +305,23 @@ Manual browser verification (emulator):
   triple bomb markers and the effects panel rendered, an attempted capture of
   a shielded pawn returned the blocked notice, and an explicit decline
   resumed play with no cost.
+- Optimistic move verified in the browser against the emulator: the moved
+  pawn appeared on the target square 28 ms after the click (untransformed
+  preview), the authoritative snapshot replaced it with the server-chosen
+  transformation at 205 ms, a double tap produced exactly one `submitMove`,
+  and a synthetic `409 ABORTED` (stale version) reverted the board, cleared
+  the pending state, and showed the server message.
+- Retry path verified in the browser: a wrapper failed the first
+  `submitMove` POST with a network error. The client retried automatically
+  with the same request id, exactly one ply committed, the optimistic preview
+  had rolled back and then reconciled, and no error surfaced.
+- Production latency (2026-10-30, client in Singapore, 40 warm moves, 0
+  rejects): `submitMove` p50 477 ms / p95 581 ms / p99 772 ms; mover snapshot
+  p50 522 / p95 605 / p99 734 ms; opponent snapshot p50 520 / p95 589 / p99
+  737 ms. The warm empty-request floor in the same setup was ~425 ms.
+- Production cold start: `createMatch` 3046 ms and the waiting-screen
+  `submitMove` prewarm 3112 ms, both before the match began; the first real
+  move then settled in 1.17 s, against a 3.27 s pre-prewarm baseline.
 - Some UI states (piece picker, bomb markers, blocked capture, decline) were
   staged with Admin-SDK-seeded match documents; every event's server logic is
   covered by unit and emulator tests.
@@ -274,7 +330,7 @@ Manual browser verification (emulator):
 
 ### Phase 6 — required for the MVP acceptance criteria
 
-1. **Netlify deploy — done**: https://chaos-chess-jefftf.netlify.app serves the
+1. **Netlify deploy — done**: https://rngchess.netlify.app serves the
    build and the five `/api/*` functions. Anonymous auth is enabled, the six
    `VITE_FIREBASE_*` variables and `FIREBASE_SERVICE_ACCOUNT_B64` are set,
    Firestore rules are live, and the Netlify domain is in the Firebase
@@ -310,12 +366,13 @@ Manual browser verification (emulator):
 
 6. **Rematch**: no rematch flow; the end screen only offers back-to-lobby.
    The brief lists rematch on the end screen.
-7. **Presence / forfeit**: disconnecting does not forfeit (intentional), but
-   there is no presence indicator and no resign/forfeit action. `resignation`
-   exists as an `EndReason` but no callable or UI uses it.
+7. **Presence indicators**: disconnecting does not forfeit (intentional), and
+   there is no online/away indicator. Resigning is now an explicit action
+   (`resignMatch`), so a player who wants to concede can do so.
 8. **Spectator views**: not implemented; matches are two-player only.
 9. **Full event history UI**: only the latest event is shown; event documents
-   exist but there is no match-wide event log.
+   exist but there is no match-wide event log. The catalogue screen explains
+   what each event does; it is not a log of offers or outcomes.
 10. **Two-sided event decisions**: the brief mentions collecting private
     decisions from both players for events that need both; none of the eight
     events need it, so the framework only supports a single responder.
@@ -333,11 +390,9 @@ Manual browser verification (emulator):
     keyboard-only pass.
 14. **Mobile device pass**: responsive breakpoints exist but verification was
     desktop-browser only.
-15. **Stale copy**: the local hotseat note still says random events are “for a
-    later phase”; update it to say HP/events are online-only.
-16. **CI**: no automated pipeline runs unit, typecheck, and emulator checks on
+15. **CI**: no automated pipeline runs unit, typecheck, and emulator checks on
     push.
-17. **Debug logs in the repo**: `firebase-debug.log` and `firestore-debug.log`
+16. **Debug logs in the repo**: `firebase-debug.log` and `firestore-debug.log`
     are tracked and modified by emulator runs; consider ignoring them.
 
 ### Intentionally out of scope

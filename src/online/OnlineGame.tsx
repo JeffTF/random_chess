@@ -7,6 +7,7 @@ import { ChessBoard } from '../ui/ChessBoard'
 import { EffectsPanel } from '../ui/EffectsPanel'
 import { EventModal } from '../ui/EventModal'
 import { HpPanel } from '../ui/HpPanel'
+import { MatchOverDialog } from '../ui/MatchOverDialog'
 import { MoveHistory } from '../ui/MoveHistory'
 import { PromotionDialog } from '../ui/PromotionDialog'
 import { TransformationSummary } from '../ui/TransformationSummary'
@@ -17,7 +18,7 @@ import {
   respondToEvent,
   submitMove,
 } from './api'
-import { buildMatchView } from './matchView'
+import { buildMatchView, predictMove } from './matchView'
 import {
   describeEndReason,
   sideForUid,
@@ -32,6 +33,8 @@ interface OnlineGameProps {
   match: PublicMatch
   uid: string
   onExit: () => void
+  onLeave: () => void
+  leaving: boolean
 }
 
 function outcomeHeadline(
@@ -54,11 +57,13 @@ export function OnlineGame({
   match,
   uid,
   onExit,
+  onLeave,
+  leaving,
 }: OnlineGameProps) {
   const mySide = sideForUid(match, uid)
   const myColor: Color | null = mySide ? sideToColor(mySide) : null
   const view = useMemo(() => buildMatchView(match), [match])
-  const privateHp = usePrivateHp(matchId, match.version, mySide !== null)
+  const privateHp = usePrivateHp(matchId, uid, mySide !== null)
 
   const [selected, setSelected] = useState<Square | null>(null)
   const [legalMoves, setLegalMoves] = useState<readonly LegalMove[]>([])
@@ -70,7 +75,27 @@ export function OnlineGame({
   const [notice, setNotice] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
   const [eventPending, setEventPending] = useState(false)
+  const [resultDismissed, setResultDismissed] = useState(false)
   const settlingEventRef = useRef<string | null>(null)
+  const sendingRef = useRef(false)
+  const [pendingMove, setPendingMove] = useState<{
+    requestId: string
+    from: Square
+    to: Square
+    promotion?: PromotionPiece
+    baseVersion: number
+  } | null>(null)
+
+  const optimistic =
+    pendingMove !== null && pendingMove.baseVersion === match.version
+      ? predictMove(
+          match.fen,
+          pendingMove.from,
+          pendingMove.to,
+          pendingMove.promotion,
+        )
+      : null
+  const boardView = optimistic ?? view
 
   const offer = match.event
   const eventDefinition = offer ? EVENT_CATALOGUE_BY_KIND[offer.kind] : null
@@ -83,6 +108,7 @@ export function OnlineGame({
     setSelected(null)
     setLegalMoves([])
     setPromotion(null)
+    setPendingMove(null)
   }, [match.version])
 
   useEffect(() => {
@@ -140,7 +166,7 @@ export function OnlineGame({
           tone: 'event',
         }
       : view.gameStatus
-        ? statusCopy(view.gameStatus, view.chess.turn())
+        ? statusCopy(view.gameStatus, boardView.chess.turn())
         : {
             headline: `Match over — ${describeEndReason(match.endReason)}`,
             detail: 'The server ended this match. The final position is below.',
@@ -148,13 +174,30 @@ export function OnlineGame({
           }
 
   const isMyTurn = mySide !== null && match.currentTurn === mySide
+  // Keep the board locked from the click until the authoritative version
+  // arrives, so a second tap cannot race the pending move.
+  const awaitingCommit =
+    pendingMove !== null && pendingMove.baseVersion === match.version
   const interactive =
     match.status === 'active' &&
     isMyTurn &&
     !pending &&
+    !awaitingCommit &&
     !eventPending &&
     promotion === null
   const finished = match.status === 'finished'
+  const iWon = match.winnerUid !== null && match.winnerUid === uid
+  const resultIsDraw = match.winnerUid === null
+  // A forfeit is only announced to the player who wins it; the player who
+  // left the match has already returned to the lobby.
+  const resultVisible =
+    finished &&
+    !resultDismissed &&
+    (match.endReason !== 'resignation' || iWon)
+  const resultDetail =
+    match.endReason === 'resignation'
+      ? 'Your opponent left the match.'
+      : describeEndReason(match.endReason)
 
   function clearSelection() {
     setSelected(null)
@@ -166,12 +209,29 @@ export function OnlineGame({
     to: Square,
     promotionPiece?: PromotionPiece,
   ) {
+    if (sendingRef.current) {
+      return
+    }
+    sendingRef.current = true
     setPending(true)
     setError(null)
+    setPromotion(null)
+    clearSelection()
+    // Show the move on this player's board immediately. The server still
+    // validates it and picks the transformation; the snapshot replaces this
+    // preview within one round trip.
+    const requestId = newRequestId()
+    setPendingMove({
+      requestId,
+      from,
+      to,
+      promotion: promotionPiece,
+      baseVersion: match.version,
+    })
     try {
       const result = await submitMove({
         matchId,
-        requestId: newRequestId(),
+        requestId,
         from,
         to,
         promotion: promotionPiece,
@@ -183,15 +243,17 @@ export function OnlineGame({
         )
       }
     } catch (caught) {
+      // The authoritative board never changed, so dropping the preview is the
+      // rollback. Keep the error message actionable.
+      setPendingMove(null)
       setError(
         caught instanceof OnlineError
           ? caught.message
           : 'That move could not be completed.',
       )
     } finally {
+      sendingRef.current = false
       setPending(false)
-      setPromotion(null)
-      clearSelection()
     }
   }
 
@@ -352,12 +414,16 @@ export function OnlineGame({
           )}
 
           <ChessBoard
-            board={view.board}
-            turn={view.chess.turn()}
+            board={boardView.board}
+            turn={boardView.chess.turn()}
             selected={selected}
             legalMoves={legalMoves}
-            lastMove={match.lastMove}
-            inCheck={view.chess.isCheck()}
+            lastMove={
+              optimistic
+                ? { from: optimistic.from, to: optimistic.to }
+                : match.lastMove
+            }
+            inCheck={boardView.chess.isCheck()}
             interactive={interactive}
             effects={match.effects}
             onSquareClick={handleSquareClick}
@@ -370,9 +436,11 @@ export function OnlineGame({
                 ? offeredToMe
                   ? 'Answer the chaos event in the dialog to continue.'
                   : 'Waiting for your opponent to answer the chaos event.'
-                : isMyTurn
-                  ? 'Your move. The server validates the move and chooses the transformation.'
-                  : 'Waiting for your opponent to move. The board updates live.'}
+                : pending || awaitingCommit
+                  ? 'Sending your move. The server will confirm it and choose the transformation.'
+                  : isMyTurn
+                    ? 'Your move. The server validates the move and chooses the transformation.'
+                    : 'Waiting for your opponent to move. The board updates live.'}
           </p>
         </section>
 
@@ -407,9 +475,10 @@ export function OnlineGame({
             <button
               type="button"
               className="text-button"
-              onClick={onExit}
+              onClick={onLeave}
+              disabled={leaving}
             >
-              Leave match
+              {leaving ? 'Leaving…' : 'Leave match'}
             </button>
           </section>
         </aside>
@@ -445,6 +514,16 @@ export function OnlineGame({
             onExpire={() => void answerEvent(false)}
           />
         )}
+
+      {resultVisible && (
+        <MatchOverDialog
+          headline={outcomeHeadline(match, mySide)}
+          detail={resultDetail}
+          tone={resultIsDraw ? 'draw' : iWon ? 'win' : 'lose'}
+          onExit={onExit}
+          onViewBoard={() => setResultDismissed(true)}
+        />
+      )}
     </>
   )
 }

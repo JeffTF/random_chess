@@ -193,6 +193,37 @@ try {
 
   await expectFailure(
     () =>
+      call(alice, 'submitMove', {
+        matchId,
+        requestId: firstRequest,
+        from: 'd2',
+        to: 'd4',
+        expectedVersion: afterReplay.version,
+      }),
+    'functions/invalid-argument',
+    'request-id-conflict',
+  )
+  pass('requestId reuse with different move content is rejected')
+
+  const beforeWarm = (
+    await getDoc(doc(bob.db, 'matches', matchId))
+  ).data()
+  const warmed = await call(bob, 'submitMove', { matchId, warm: true })
+  assert.equal(warmed.version, beforeWarm.version)
+  const afterWarm = (await getDoc(doc(alice.db, 'matches', matchId))).data()
+  assert.equal(afterWarm.version, beforeWarm.version)
+  assert.equal(afterWarm.history.length, beforeWarm.history.length)
+  pass('warm-up call returns state without changing the match')
+
+  await expectFailure(
+    () => call(eve, 'submitMove', { matchId, warm: true }),
+    'functions/permission-denied',
+    'not-a-member',
+  )
+  pass('non-member cannot warm the move function')
+
+  await expectFailure(
+    () =>
       call(bob, 'submitMove', {
         matchId,
         requestId: 'bob-stale-0001',
@@ -240,6 +271,46 @@ try {
   assert.equal(moveDoc.data().playerUid, bobUid)
   assert.equal(moveDoc.data().version, second.version)
   pass('move document records the request, player, and version')
+
+  const raceState = await settleOffers(matchId, alice, bob)
+  const racePayload = {
+    matchId,
+    from: 'd2',
+    to: 'd4',
+    expectedVersion: raceState.version,
+  }
+  const race = await Promise.allSettled([
+    call(alice, 'submitMove', {
+      ...racePayload,
+      requestId: 'alice-race-0001',
+    }),
+    call(alice, 'submitMove', {
+      ...racePayload,
+      requestId: 'alice-race-0002',
+    }),
+  ])
+  const fulfilled = race.filter((result) => result.status === 'fulfilled')
+  const rejected = race.filter((result) => result.status === 'rejected')
+  assert.equal(fulfilled.length, 1)
+  assert.equal(rejected.length, 1)
+  // The loser may be rejected by the turn, version, or event check depending
+  // on which state its transaction retried against after the winner committed.
+  const raceRejection = rejected[0].reason
+  assert.ok(
+    raceRejection.code === 'functions/aborted' ||
+      raceRejection.code === 'functions/failed-precondition',
+    `unexpected race rejection ${raceRejection.code}`,
+  )
+  assert.ok(
+    ['stale-version', 'wrong-turn', 'event-pending'].includes(
+      raceRejection.details?.reason,
+    ),
+    `unexpected race reason ${raceRejection.details?.reason}`,
+  )
+  const afterRace = await settleOffers(matchId, alice, bob)
+  assert.equal(afterRace.history.length, 3)
+  assert.equal(afterRace.history[2].san, 'd4')
+  pass('two racing submissions advance the match exactly once')
 
   console.log('\nPHASE 2 EMULATOR CHECK PASSED')
 } finally {

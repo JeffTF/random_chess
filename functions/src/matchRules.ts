@@ -141,6 +141,42 @@ export function endFields(
   return { status: 'active', winnerUid: null, endReason: null }
 }
 
+/**
+ * A player leaving an active match forfeits: the opponent wins, and any
+ * pending event offer is dropped. Waiting rooms cannot be resigned because
+ * there is no opponent to award the win to.
+ */
+export function resignMatch(
+  state: MatchDocument,
+  uid: string,
+): MatchDocument {
+  const side = sideOf(state, uid)
+  if (!side) {
+    throw new MatchRuleError(
+      'not-a-member',
+      'You are not a player in this match.',
+    )
+  }
+  if (state.status === 'finished') {
+    throw new MatchRuleError('match-not-active', 'This match is already over.')
+  }
+  const winnerUid = uidForSide(state, oppositeSide(side))
+  if (state.status === 'waiting' || winnerUid === null) {
+    throw new MatchRuleError(
+      'match-not-active',
+      'This match has not started yet.',
+    )
+  }
+  return {
+    ...state,
+    status: 'finished',
+    winnerUid,
+    endReason: 'resignation',
+    event: null,
+    version: state.version + 1,
+  }
+}
+
 function enPassantCapturedSquare(
   from: Square,
   to: Square,

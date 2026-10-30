@@ -1,5 +1,10 @@
-import { Chess } from 'chess.js'
-import type { Board, DrawReason, GameStatus } from '../game/types'
+import { Chess, type Square } from 'chess.js'
+import type {
+  Board,
+  DrawReason,
+  GameStatus,
+  PromotionPiece,
+} from '../game/types'
 import type { PublicMatch } from './types'
 
 const DRAW_REASONS: ReadonlySet<string> = new Set([
@@ -26,6 +31,37 @@ export function buildMatchView(match: PublicMatch): MatchView {
     .map((row) => row.map((cell) => (cell ? { ...cell } : null)))
 
   return { chess, board, gameStatus: gameStatusFor(match, chess) }
+}
+
+export interface PredictedMove {
+  chess: Chess
+  board: Board
+  from: Square
+  to: Square
+}
+
+/**
+ * Local-only preview of a move while it is in flight. The transformation is
+ * chosen by the server, so this shows the untransformed piece until the
+ * authoritative snapshot replaces it. Returns null for anything illegal, so
+ * a bad prediction can never reach the board.
+ */
+export function predictMove(
+  fen: string,
+  from: Square,
+  to: Square,
+  promotion?: PromotionPiece,
+): PredictedMove | null {
+  const chess = new Chess(fen)
+  try {
+    chess.move({ from, to, promotion })
+  } catch {
+    return null
+  }
+  const board: Board = chess
+    .board()
+    .map((row) => row.map((cell) => (cell ? { ...cell } : null)))
+  return { chess, board, from, to }
 }
 
 function gameStatusFor(

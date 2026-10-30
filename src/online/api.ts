@@ -50,6 +50,12 @@ export interface RespondToEventResult {
   duplicate: boolean
 }
 
+export interface ResignMatchResult {
+  version: number
+  status: MatchStatus
+  endReason: string | null
+}
+
 export interface PrivateMatchState {
   hp: number
 }
@@ -80,10 +86,17 @@ function toOnlineError(error: unknown): OnlineError {
   const reason =
     typeof details?.reason === 'string' ? details.reason : undefined
 
-  if (code === 'functions/unavailable' || code === 'functions/deadline-exceeded') {
+  // The callable SDK reports a dropped fetch as functions/internal, and the
+  // HTTP transport reports 5xx as an error without a reason. Both are safe to
+  // retry because the server dedupes moves by requestId.
+  if (
+    code === 'functions/unavailable' ||
+    code === 'functions/deadline-exceeded' ||
+    code === 'functions/internal'
+  ) {
     return new OnlineError(
-      'Cannot reach the game server. Start the Firebase emulators and try again.',
-      reason,
+      'Cannot reach the game server. Check your connection and try again.',
+      reason ?? 'unavailable',
     )
   }
 
@@ -120,6 +133,7 @@ async function post<TOutput>(name: string, input: unknown): Promise<TOutput> {
   } catch {
     throw new OnlineError(
       'Cannot reach the game server. Check your connection and try again.',
+      'network',
     )
   }
 
@@ -128,6 +142,12 @@ async function post<TOutput>(name: string, input: unknown): Promise<TOutput> {
     | null
 
   if (!response.ok) {
+    if (response.status >= 500) {
+      throw new OnlineError(
+        'The game server hit a problem. Try again in a moment.',
+        'unavailable',
+      )
+    }
     const message =
       typeof payload?.error?.message === 'string' &&
       payload.error.message.length > 0
@@ -159,6 +179,35 @@ async function call<TInput, TOutput>(
   }
 }
 
+/**
+ * Network and availability failures are safe to retry because the server
+ * dedupes by requestId. Permanent rejections (illegal move, stale version,
+ * wrong turn) are never retried.
+ */
+function isTransient(error: unknown): boolean {
+  return (
+    error instanceof OnlineError &&
+    (error.reason === 'network' || error.reason === 'unavailable')
+  )
+}
+
+const MOVE_RETRY_DELAYS_MS = [250, 800]
+
+async function withTransientRetry<T>(run: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await run()
+    } catch (error) {
+      const baseDelay = MOVE_RETRY_DELAYS_MS[attempt]
+      if (baseDelay === undefined || !isTransient(error)) {
+        throw error
+      }
+      const delay = baseDelay + Math.random() * 150
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+  }
+}
+
 export function createMatch(): Promise<CreateMatchResult> {
   return call('createMatch', {})
 }
@@ -168,13 +217,26 @@ export function joinMatch(roomCode: string): Promise<JoinMatchResult> {
 }
 
 export function submitMove(input: SubmitMoveInput): Promise<SubmitMoveResult> {
-  return call('submitMove', input)
+  return withTransientRetry(() => call('submitMove', input))
+}
+
+/**
+ * Best effort: runs the submitMove function so its cold start does not land
+ * on the player's first real move. The server answers with the current state
+ * and writes nothing.
+ */
+export function prewarmSubmitMove(matchId: string): Promise<SubmitMoveResult> {
+  return call('submitMove', { matchId, warm: true })
 }
 
 export function respondToEvent(
   input: RespondToEventInput,
 ): Promise<RespondToEventResult> {
   return call('respondToEvent', input)
+}
+
+export function resignMatch(matchId: string): Promise<ResignMatchResult> {
+  return call('resignMatch', { matchId })
 }
 
 export function getMyPrivateMatchState(

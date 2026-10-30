@@ -17,6 +17,7 @@ import {
   MatchRuleError,
   applyMove,
   normalizeMatch,
+  resignMatch,
   sideOf,
   uidForSide,
   type MatchRuleReason,
@@ -45,7 +46,7 @@ export type ApiErrorCode =
   | 'resource-exhausted'
   | 'internal'
 
-export type ApiReason = MatchRuleReason | 'match-full'
+export type ApiReason = MatchRuleReason | 'match-full' | 'request-id-conflict'
 
 /** Transport-neutral failure; callable and HTTP adapters map it to their own shape. */
 export class ApiError extends Error {
@@ -354,6 +355,34 @@ export async function submitMoveFor(uid: string, input: unknown) {
   const data = asRecord(input)
 
   const matchId = requireString(data.matchId, 'matchId', ID_PATTERN)
+  const db = getFirestore()
+  const matchRef = db.collection('matches').doc(matchId)
+
+  // Warm-up call made by the client when a room starts. It runs the same
+  // module, token verification, and Firestore client as a real move, then
+  // stops without reading or writing any game state beyond membership.
+  if (data.warm === true) {
+    const snapshot = await matchRef.get()
+    if (!snapshot.exists) {
+      throw new ApiError('not-found', 'Match not found.')
+    }
+    const state = normalizeMatch(snapshot.data()!)
+    if (!sideOf(state, uid)) {
+      throw new ApiError(
+        'permission-denied',
+        'You are not a player in this match.',
+        'not-a-member',
+      )
+    }
+    return {
+      version: state.version,
+      status: state.status,
+      endReason: state.endReason,
+      blocked: null,
+      duplicate: false,
+    }
+  }
+
   const requestId = requireString(
     data.requestId,
     'requestId',
@@ -364,12 +393,11 @@ export async function submitMoveFor(uid: string, input: unknown) {
   const to = squareOrThrow(data.to, 'to')
   const promotion = optionalPromotion(data.promotion)
 
-  const db = getFirestore()
-  const matchRef = db.collection('matches').doc(matchId)
   const moveRef = matchRef.collection('moves').doc(requestId)
   const nowMs = Date.now()
+  const startedAt = nowMs
 
-  return db.runTransaction(async (transaction) => {
+  const result = await db.runTransaction(async (transaction) => {
     const [matchSnapshot, moveSnapshot] = await Promise.all([
       transaction.get(matchRef),
       transaction.get(moveRef),
@@ -384,7 +412,28 @@ export async function submitMoveFor(uid: string, input: unknown) {
     // Retries reuse the same requestId, so an existing move means this
     // request was already applied; report success without applying it twice.
     if (moveSnapshot.exists) {
-      const stored = moveSnapshot.data() as { blocked?: string | null }
+      const stored = moveSnapshot.data() as {
+        playerUid?: string
+        from?: string
+        to?: string
+        promotion?: string | null
+        blocked?: string | null
+      }
+      // A reused id must describe the same intent. Receipts written before
+      // this check existed have no coordinates, so they count as matching.
+      const conflicts =
+        (stored.playerUid !== undefined && stored.playerUid !== uid) ||
+        (stored.from !== undefined && stored.from !== from) ||
+        (stored.to !== undefined && stored.to !== to) ||
+        (stored.promotion !== undefined &&
+          (stored.promotion ?? null) !== (promotion ?? null))
+      if (conflicts) {
+        throw new ApiError(
+          'invalid-argument',
+          'That request id was already used for a different move.',
+          'request-id-conflict',
+        )
+      }
       return {
         version: state.version,
         status: state.status,
@@ -472,6 +521,9 @@ export async function submitMoveFor(uid: string, input: unknown) {
       transaction.set(moveRef, {
         requestId,
         playerUid: uid,
+        from,
+        to,
+        promotion: promotion ?? null,
         blocked: outcome.blocked,
         version: outcome.next.version,
         createdAt: FieldValue.serverTimestamp(),
@@ -511,7 +563,7 @@ export async function submitMoveFor(uid: string, input: unknown) {
       playerUid: uid,
       from,
       to,
-      promotion: record.promotion,
+      promotion: record.promotion ?? null,
       san: record.san,
       captured: record.captured,
       transformation: record.transformation,
@@ -535,8 +587,14 @@ export async function submitMoveFor(uid: string, input: unknown) {
     }
 
     for (const [privateUid, value] of Object.entries(privateState)) {
+      const hp = clampHp(outcome.hp[privateUid] ?? value.hp)
+      // Most moves leave HP untouched; skipping those writes keeps the
+      // transaction's write set to what actually changed.
+      if (hp === value.hp) {
+        continue
+      }
       transaction.set(matchRef.collection('private').doc(privateUid), {
-        hp: clampHp(outcome.hp[privateUid] ?? value.hp),
+        hp,
         ...(value.reverseUsed ? { reverseUsed: true } : {}),
       })
     }
@@ -549,6 +607,20 @@ export async function submitMoveFor(uid: string, input: unknown) {
       duplicate: false,
     }
   })
+
+  console.log(
+    JSON.stringify({
+      event: 'submitMove',
+      requestId,
+      matchId,
+      durationMs: Date.now() - startedAt,
+      version: result.version,
+      status: result.status,
+      blocked: result.blocked,
+      duplicate: result.duplicate,
+    }),
+  )
+  return result
 }
 
 export async function respondToEventFor(uid: string, input: unknown) {
@@ -649,6 +721,44 @@ export async function respondToEventFor(uid: string, input: unknown) {
   })
 }
 
+export async function resignMatchFor(uid: string, input: unknown) {
+  const data = asRecord(input)
+  const matchId = requireString(data.matchId, 'matchId', ID_PATTERN)
+
+  const db = getFirestore()
+  const matchRef = db.collection('matches').doc(matchId)
+
+  return db.runTransaction(async (transaction) => {
+    const matchSnapshot = await transaction.get(matchRef)
+    if (!matchSnapshot.exists) {
+      throw new ApiError('not-found', 'Match not found.')
+    }
+
+    const state = normalizeMatch(matchSnapshot.data()!)
+    const next = resignMatch(state, uid)
+
+    // A resigning player may have an offer on the table; close it so the
+    // event document does not stay pending on a finished match.
+    if (state.event) {
+      transaction.set(
+        matchRef.collection('events').doc(state.event.id),
+        { status: 'expired', resolvedAtMs: Date.now() },
+        { merge: true },
+      )
+    }
+    transaction.update(matchRef, {
+      ...publicFields(next),
+      updatedAt: FieldValue.serverTimestamp(),
+    })
+
+    return {
+      version: next.version,
+      status: next.status,
+      endReason: next.endReason,
+    }
+  })
+}
+
 export async function getMyPrivateMatchStateFor(uid: string, input: unknown) {
   const data = asRecord(input)
   const matchId = requireString(data.matchId, 'matchId', ID_PATTERN)
@@ -685,6 +795,7 @@ export type ApiAction =
   | 'joinMatch'
   | 'submitMove'
   | 'respondToEvent'
+  | 'resignMatch'
   | 'getMyPrivateMatchState'
 
 export function runAction(
@@ -701,6 +812,8 @@ export function runAction(
       return submitMoveFor(uid, data)
     case 'respondToEvent':
       return respondToEventFor(uid, data)
+    case 'resignMatch':
+      return resignMatchFor(uid, data)
     case 'getMyPrivateMatchState':
       return getMyPrivateMatchStateFor(uid, data)
   }

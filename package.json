@@ -14,6 +14,7 @@
     "typecheck:functions": "npm --prefix functions run typecheck",
     "test:emulator": "node scripts/phase2-check.mjs && node scripts/phase3-check.mjs && node scripts/phase4-check.mjs",
     "test:netlify": "node scripts/netlify-check.mjs",
+    "latency": "node scripts/latency-check.mjs",
     "emulators": "npm run build:functions && firebase emulators:start"
   },
   "dependencies": {

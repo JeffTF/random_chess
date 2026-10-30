@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { createMatch, joinMatch, OnlineError } from './api'
+import { createMatch, joinMatch, OnlineError, prewarmSubmitMove, resignMatch } from './api'
 import { OnlineGame } from './OnlineGame'
 import { useAnonymousUser } from './useAnonymousUser'
 import { useMatch } from './useMatch'
@@ -35,14 +35,17 @@ function inviteLink(roomCode: string): string {
 
 export function OnlineApp({
   onPlayLocal,
+  onShowEvents,
 }: {
   onPlayLocal: () => void
+  onShowEvents: () => void
 }) {
   const user = useAnonymousUser()
   const [matchId, setMatchId] = useState<string | null>(null)
   const [roomCode, setRoomCode] = useState<string | null>(readRoomParam)
   const [codeInput, setCodeInput] = useState(readRoomParam() ?? '')
   const [busy, setBusy] = useState(false)
+  const [leaving, setLeaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const autoJoinRef = useRef(false)
@@ -103,12 +106,59 @@ export function OnlineApp({
     void joinByCode(code)
   }
 
+  const match = matchState.match
+  const warmedRef = useRef<string | null>(null)
+
+  // Run the move function once per room so its cold start does not land on
+  // the first real move. Best effort; failures are ignored.
+  useEffect(() => {
+    if (!matchId || !match) {
+      return
+    }
+    if (match.status !== 'waiting' && match.status !== 'active') {
+      return
+    }
+    if (warmedRef.current === matchId) {
+      return
+    }
+    warmedRef.current = matchId
+    void prewarmSubmitMove(matchId).catch(() => {})
+  }, [matchId, match])
+
+  async function handleLeave() {
+    if (!matchId || !match || match.status === 'waiting') {
+      backToLobby()
+      return
+    }
+    if (match.status === 'finished') {
+      backToLobby()
+      return
+    }
+    const confirmed = window.confirm(
+      'Leaving an active match counts as a resignation. Your opponent wins. Leave?',
+    )
+    if (!confirmed) {
+      return
+    }
+    setLeaving(true)
+    setError(null)
+    try {
+      await resignMatch(matchId)
+    } catch (caught) {
+      setError(messageFor(caught))
+      setLeaving(false)
+      return
+    }
+    backToLobby()
+  }
+
   function backToLobby() {
     writeRoomParam(null)
     setMatchId(null)
     setRoomCode(null)
     setError(null)
     setBusy(false)
+    setLeaving(false)
     setCopied(false)
     autoJoinRef.current = true
   }
@@ -122,8 +172,6 @@ export function OnlineApp({
       setError('Could not copy the link. Select it above and copy manually.')
     }
   }
-
-  const match = matchState.match
 
   return (
     <div className="app">
@@ -140,13 +188,23 @@ export function OnlineApp({
             Every non-king move rewrites the piece that made it.
           </p>
         </div>
-        <button
-          type="button"
-          className="new-game-button"
-          onClick={match ? backToLobby : onPlayLocal}
-        >
-          {match ? 'Leave match' : 'Local practice'}
-        </button>
+        <div className="masthead-actions">
+          <button
+            type="button"
+            className="new-game-button"
+            onClick={onShowEvents}
+          >
+            All events
+          </button>
+          <button
+            type="button"
+            className="new-game-button"
+            onClick={match ? () => void handleLeave() : onPlayLocal}
+            disabled={leaving}
+          >
+            {match ? (leaving ? 'Leaving…' : 'Leave match') : 'Local practice'}
+          </button>
+        </div>
       </header>
 
       {user.status === 'loading' && (
@@ -283,12 +341,20 @@ export function OnlineApp({
         </section>
       )}
 
+      {user.status === 'ready' && matchId && match && match.status !== 'waiting' && error && (
+        <div className="error-banner" role="alert">
+          {error}
+        </div>
+      )}
+
       {user.status === 'ready' && matchId && match && match.status !== 'waiting' && (
         <OnlineGame
           matchId={matchId}
           match={match}
           uid={user.uid}
           onExit={backToLobby}
+          onLeave={() => void handleLeave()}
+          leaving={leaving}
         />
       )}
     </div>

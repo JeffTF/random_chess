@@ -9,6 +9,7 @@ import {
   createMatchFor,
   getMyPrivateMatchStateFor,
   joinMatchFor,
+  resignMatchFor,
   respondToEventFor,
   submitMoveFor,
   toApiError,
@@ -62,6 +63,10 @@ export const submitMove = onCall(CALLABLE_OPTIONS, (request) =>
 
 export const respondToEvent = onCall(CALLABLE_OPTIONS, (request) =>
   call(request, respondToEventFor),
+)
+
+export const resignMatch = onCall(CALLABLE_OPTIONS, (request) =>
+  call(request, resignMatchFor),
 )
 
 export const getMyPrivateMatchState = onCall(CALLABLE_OPTIONS, (request) =>

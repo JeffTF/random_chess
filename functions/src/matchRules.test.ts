@@ -1,6 +1,6 @@
 import { Chess } from 'chess.js'
 import { describe, expect, it } from 'vitest'
-import { applyMove, MatchRuleError, sideOf } from './matchRules'
+import { applyMove, MatchRuleError, resignMatch, sideOf } from './matchRules'
 import type { MatchDocument } from './types'
 import type { RandomSource } from '../../src/game/types'
 
@@ -453,5 +453,68 @@ describe('move-triggered event effects', () => {
     expect(outcome.next.status).toBe('finished')
     expect(outcome.next.endReason).toBe('hp-depleted')
     expect(outcome.next.winnerUid).toBe(WHITE)
+  })
+})
+
+describe('resignation', () => {
+  it('awards the win to the opponent of the resigning player', () => {
+    const next = resignMatch(activeMatch({ version: 7 }), WHITE)
+
+    expect(next.status).toBe('finished')
+    expect(next.endReason).toBe('resignation')
+    expect(next.winnerUid).toBe(BLACK)
+    expect(next.version).toBe(8)
+  })
+
+  it('awards white the win when black resigns', () => {
+    const next = resignMatch(
+      activeMatch({ currentTurn: 'black', version: 3 }),
+      BLACK,
+    )
+
+    expect(next.winnerUid).toBe(WHITE)
+    expect(next.endReason).toBe('resignation')
+  })
+
+  it('drops a pending event offer when the match is resigned', () => {
+    const state = activeMatch({
+      status: 'event_pending',
+      event: {
+        id: 'event-4',
+        kind: 'swap-sides',
+        offeredTo: 'white',
+        cost: 50,
+        requiresPiece: false,
+        createdAtMs: 1,
+        expiresAtMs: 2,
+      },
+    })
+
+    const next = resignMatch(state, WHITE)
+
+    expect(next.status).toBe('finished')
+    expect(next.event).toBeNull()
+  })
+
+  it('rejects non-members and matches that are over or not started', () => {
+    expect(reasonOf(() => resignMatch(activeMatch(), 'uid-stranger'))).toBe(
+      'not-a-member',
+    )
+    expect(
+      reasonOf(() =>
+        resignMatch(
+          activeMatch({ status: 'finished', endReason: 'checkmate' }),
+          WHITE,
+        ),
+      ),
+    ).toBe('match-not-active')
+    expect(
+      reasonOf(() =>
+        resignMatch(
+          activeMatch({ status: 'waiting', playerBlackUid: null }),
+          WHITE,
+        ),
+      ),
+    ).toBe('match-not-active')
   })
 })

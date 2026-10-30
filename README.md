@@ -145,11 +145,66 @@ npm run test:netlify      # needs the emulators running; exercises the HTTP API
   contain HP. Damage rolls are applied with the Admin SDK; only the
   accepting player's own loss is returned by `respondToEvent`.
 
+## Move responsiveness
+
+- The player who moves sees the move on their board immediately (an
+  optimistic preview) instead of waiting for the server round trip. The
+  preview shows the piece before transformation; the authoritative snapshot
+  replaces it within the same round trip, including the transformation,
+  turn, events, and effects.
+- The preview is only shown for moves that chess.js confirms as legal for
+  the current position, so it is a UX aid, never a rules decision. The
+  server still validates every move, chooses transformations, and owns HP
+  and event outcomes.
+- While a move is in flight the board is locked, so a second tap cannot
+  queue or duplicate a submission. If the server rejects the move (stale
+  version, event in the way, network failure), the preview is dropped, the
+  board reverts to the last authoritative state, and the error is shown.
+- Reconciliation is keyed by the match `version`: a preview only survives
+  while its base version is current, so an unrelated snapshot clears it.
+- Your HP is streamed from one owner-only Firestore listener instead of a
+  server call per move. Snapshots are applied in version order, so a
+  reconnecting client cannot briefly show an older board. The opponent's HP
+  is never in the public match document.
+- A dropped connection, timeout, or 5xx is retried at most twice with the
+  same `requestId`, so the server can only apply the move once. Validation
+  rejections (illegal move, stale version, wrong turn, pending event) are
+  never retried.
+- While a room waits for an opponent, the client prewarms `submitMove`, so
+  the function cold start happens on the waiting screen rather than on the
+  first move. The warm call only reads and returns the current state.
+- One transaction handles a move: four point reads (match, move receipt, and
+  the two owner-only HP documents) and two to five writes (receipt, match,
+  optionally one event document, and only the HP documents that changed). No
+  triggers, no composite indexes, and no extra function calls on the move
+  path.
+- `scripts/latency-check.mjs` measures this path with two anonymous
+  clients, prints p50/p95/p99 for the API call, the mover's own snapshot,
+  and the opponent's snapshot, and prewarms `submitMove` first. Run it with
+  `npm run latency` (defaults to the deployed site; `--base` selects another
+  origin, `--moves` sets the sample count, `--prewarm=0` disables the warm
+  call).
+
+## Match endings and leaving
+
+- A finished match shows a result dialog with the outcome (You win, You
+  lose, or Draw) and the end reason. "View final board" dismisses it and
+  "Back to lobby" leaves the room.
+- Leaving an active match is a resignation. The client confirms first, then
+  calls `resignMatch`; the server marks the match `finished` with
+  `endReason: 'resignation'` and awards the win to the opponent.
+- A forfeit only shows the result dialog to the winner. The player who
+  leaves goes straight back to the lobby, because they already made the
+  decision. Checkmate, HP depletion, and draws show it to both players.
+- "All events" (`?events=1`) opens the full-screen catalogue of all eight
+  chaos events with costs and targeting rules. The screen you came from
+  keeps its state while the catalogue is open.
+
 ## Deploy
 
-Production runs on Netlify: the static build plus five Netlify Functions
+Production runs on Netlify: the static build plus six Netlify Functions
 under `/api/*`. Firebase still provides Authentication, Firestore, and the
-security rules. Live at https://chaos-chess-jefftf.netlify.app.
+security rules. Live at https://rngchess.netlify.app.
 
 ```powershell
 npx firebase deploy --only firestore:rules   # rules (Spark plan is fine)
@@ -226,7 +281,7 @@ equality filter.
 - `functions/src/index.ts` — Cloud Functions callables used by the
   emulator workflow.
 - `functions/src/api.ts` — transport-neutral
-  `createMatch`/`joinMatch`/`submitMove`/`respondToEvent`/
+  `createMatch`/`joinMatch`/`submitMove`/`respondToEvent`/`resignMatch`/
   `getMyPrivateMatchState` handlers shared by callables and Netlify.
 - `functions/src/http.ts` — Netlify Functions adapter: verifies the Firebase
   ID token, maps `ApiError` to HTTP status codes, returns only authorized
@@ -238,5 +293,5 @@ equality filter.
 
 ## Not implemented yet
 
-App Check, request rate limiting, presence/forfeit, rematch, and spectator
-views belong to later phases.
+App Check, request rate limiting, presence indicators, rematch, and
+spectator views belong to later phases.
