@@ -30,7 +30,7 @@ export const EVENT_CATALOGUE: readonly EventDefinition[] = [
     name: 'Shared HP Loss',
     description:
       'Both players lose 5–15 HP, rolled separately by the server. Neither roll is shown to the opponent.',
-    cost: 50,
+    cost: 0,
     pieceTarget: null,
   },
   {
@@ -109,7 +109,7 @@ export const EVENT_TUNING: EventTuning = {
   offerChance: 0.25,
   minGapPlies: 2,
   responseTimeoutMs: 15_000,
-  sharedLoss: { min: 5, max: 15 },
+  sharedLoss: { min: 20, max: 50 },
   tripleBomb: { maxTargets: 3, damage: 10, windowTurns: 2 },
   friendlyBomb: { damage: 10 },
 }
