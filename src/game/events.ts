@@ -29,7 +29,7 @@ export const EVENT_CATALOGUE: readonly EventDefinition[] = [
     kind: 'shared-hp-loss',
     name: 'Shared HP Loss',
     description:
-      'Both players lose 5–15 HP, rolled separately by the server. Neither roll is shown to the opponent.',
+      'Both players lose 20–50 HP, rolled separately by the server. Neither roll is shown to the opponent.',
     cost: 0,
     pieceTarget: null,
   },
